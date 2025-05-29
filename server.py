@@ -1,56 +1,88 @@
-import socket
+import socket 
 from threading import Thread
 
 class Server:
-    Clients = []
 
-    # Create a TCP socket over IPv4. Accept at max 5 connections.
+    Mails = []
+    Conversations = []
+
     def __init__(self, HOST, PORT):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.bind((HOST, PORT))
         self.socket.listen(5)
-        print('Server waiting for connection....')
-        
+        print('[+] Server waiting for connection...')
+
     def listen(self):
         while True:
-            client_socket, address = self.socket.accept()
-            print("Connection from: " + str(address))
-            
-            # The first message will be the username
-            client_name = client_socket.recv(1024).decode()
-            client = {'client_name': client_name, 'client_socket': client_socket}
-            
-            # Broadcast that the new client has connected
-            self.broadcast_message(client_name, client_name + " has joined the chat!")
-            
-            Server.Clients.append(client)
-            Thread(target = self.handle_new_client, args = (client,)).start()
+            client, addr = self.socket.accept()
+            print(f"[+] Connection from {str(addr)}")
 
-    def handle_new_client(self, client):
-        client_name = client['client_name']
-        client_socket = client['client_socket']
+            email = client.recv(1024).decode()
+            if not any(user['email'] == email for user in Server.Mails):
+                Server.Mails.append({'email': email, 'socket': client})
+            else:
+                client.send("Email already exists".encode())
+                client.close()
+                return
+
+            client.send("Enter the email of the person you want to talk to: ".encode())
+            reciver_email = client.recv(1024).decode()
+            reciver = {}
+            for i in Server.Mails:
+                if i['email'] == reciver_email:
+                    reciver = i
+                    break
+            if reciver == {}:
+                client.send("Enter the exist user".encode())
+                client.close()
+                return
+                        
+            Server.Conversations.append({
+                'sender': {'email': email, 'socket': client},
+                'reciver': reciver,
+                'messages': [],
+                'is_open': True
+            })
+            Thread(target=self.handle_conversation, args=({'email': email, 'socket': client},)).start()
+        
+    def handle_conversation(self, client):
         while True:
-            # Listen out for messages and broadcast the message to all clients.
-            client_message = client_socket.recv(1024).decode()
-            # If the message is bye, remove the client from the list of clients and
-            # close down the socket.
-            if client_message.strip() == client_name + ": bye" or not client_message.strip():
-                self.broadcast_message(client_name, client_name + " has left the chat!")
-                Server.Clients.remove(client)
-                client_socket.close()
+            email = client['email']
+            socket = client['socket']
+            reciver_email = ""
+            reciver_socket = ""
+
+            for conversation in Server.Conversations:
+                if conversation['is_open'] == True and conversation['reciver']['email'] == email and conversation['reciver']['socket'] == socket or conversation['sender']['email'] == email and conversation['sender']['socket'] == socket:
+                    reciver_email = conversation['reciver']['email']
+                    reciver_socket = conversation['reciver']['socket']
+                    break
+            
+            while True:
+                client_message = client.recv(1024).decode()
+                if client_message.split(":")[1].strip() == "q" or not client_message.strip():
+                    for conversation in Server.Conversations:
+                        if (conversation['sender']['email'] == email and conversation['sender']['socket'] == socket) or \
+                        (conversation['reciver']['email'] == email and conversation['reciver']['socket'] == socket):
+                            conversation['is_open'] = False
+                            break
+
+                    self.send_message(self, client = {"email": email, "socket": socket}, message = "The conversation has been closed by the sender", reciver_email = {"email": reciver_email, "socket": reciver_socket})
+                    Server.Mails.remove({"email": email, "socket": socket})
+                    Server.Conversations.remove(conversation)
+                    socket.close()
+                    break
+                else:
+                    self.send_message(self, client = {"email": email, "socket": socket}, message = client_message, reciver_email = {"email": reciver_email, "socket": reciver_socket})
+    
+    def send_message(self, client, message, reciver_email):
+        for conversation in Server.Conversations:
+            if conversation['is_open'] == True and conversation['reciver']['email'] == client['email'] and conversation['reciver']['socket'] == client['socket'] or conversation['sender']['email'] == client['email'] and conversation['sender']['socket'] == client['socket']:
+                conversation['messages'].append(message)
+                reciver_email['socket'].send(message.encode())
                 break
-            else: 
-                # Send the message to all other clients
-                self.broadcast_message(client_name, client_message)
                 
-    def broadcast_message(self, sender_name, message):
-        for client in self.Clients:
-            client_socket = client['client_socket']
-            client_name = client['client_name']
-            if client_name != sender_name:
-                client_socket.send(message.encode())
 
 if __name__ == "__main__":
     server = Server("127.0.0.1", 12345)
     server.listen()
-                
