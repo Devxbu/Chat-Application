@@ -1,88 +1,113 @@
-import socket 
+import socket
 from threading import Thread
 
+class Client:
+    def __init__(self, email, socket):
+        self.email = email
+        self.socket = socket
+
+class Conversation:
+    def __init__(self, sender: Client, receiver: Client):
+        self.sender = sender
+        self.receiver = receiver
+        self.messages = []
+        self.is_open = True
+
+    def involves(self, client: Client):
+        return self.sender.email == client.email or self.receiver.email == client.email
+
+    def get_partner(self, client: Client):
+        return self.receiver if self.sender.email == client.email else self.sender
+
 class Server:
+    def __init__(self, host, port):
+        self.clients = []
+        self.conversations = []
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind((host, port))
+        self.server_socket.listen(5)
+        print("[+] Server started, waiting for connections...")
 
-    Mails = []
-    Conversations = []
-
-    def __init__(self, HOST, PORT):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.bind((HOST, PORT))
-        self.socket.listen(5)
-        print('[+] Server waiting for connection...')
-
-    def listen(self):
+    def start(self):
         while True:
-            client, addr = self.socket.accept()
-            print(f"[+] Connection from {str(addr)}")
+            client_socket, addr = self.server_socket.accept()
+            print(f"[+] Connection from {addr}")
+            Thread(target=self.register_client, args=(client_socket,)).start()
 
-            email = client.recv(1024).decode()
-            if not any(user['email'] == email for user in Server.Mails):
-                Server.Mails.append({'email': email, 'socket': client})
-            else:
-                client.send("Email already exists".encode())
-                client.close()
+    def register_client(self, client_socket):
+        try:
+            email = client_socket.recv(1024).decode().strip()
+            if any(c.email == email for c in self.clients):
+                print(f"[!] Email already in use: {email}")
+                client_socket.send("Email already in use. Connection closing.".encode())
+                client_socket.close()
                 return
 
-            client.send("Enter the email of the person you want to talk to: ".encode())
-            reciver_email = client.recv(1024).decode()
-            reciver = {}
-            for i in Server.Mails:
-                if i['email'] == reciver_email:
-                    reciver = i
-                    break
-            if reciver == {}:
-                client.send("Enter the exist user".encode())
-                client.close()
-                return
-                        
-            Server.Conversations.append({
-                'sender': {'email': email, 'socket': client},
-                'reciver': reciver,
-                'messages': [],
-                'is_open': True
-            })
-            Thread(target=self.handle_conversation, args=({'email': email, 'socket': client},)).start()
-        
-    def handle_conversation(self, client):
-        while True:
-            email = client['email']
-            socket = client['socket']
-            reciver_email = ""
-            reciver_socket = ""
+            new_client = Client(email=email, socket=client_socket)
+            self.clients.append(new_client)
+            print(f"[+] Registered client: {email}")
 
-            for conversation in Server.Conversations:
-                if conversation['is_open'] == True and conversation['reciver']['email'] == email and conversation['reciver']['socket'] == socket or conversation['sender']['email'] == email and conversation['sender']['socket'] == socket:
-                    reciver_email = conversation['reciver']['email']
-                    reciver_socket = conversation['reciver']['socket']
-                    break
-            
+            client_socket.send("Enter the email of the person you want to talk to: ".encode())
+            receiver_email = client_socket.recv(1024).decode().strip()
+
+            receiver = next((c for c in self.clients if c.email == receiver_email), None)
+            if not receiver:
+                client_socket.send("User not found. Connection closing.".encode())
+                client_socket.close()
+                self.clients.remove(new_client)
+                return
+
+            conversation = self.find_or_create_conversation(new_client, receiver)
+            Thread(target=self.handle_conversation, args=(new_client, conversation)).start()
+
+        except Exception as e:
+            print(f"[!] Error registering client: {e}")
+            client_socket.close()
+
+    def find_or_create_conversation(self, sender, receiver):
+        for conv in self.conversations:
+            if ((conv.sender.email == sender.email and conv.receiver.email == receiver.email) or
+                (conv.sender.email == receiver.email and conv.receiver.email == sender.email)):
+                conv.is_open = True
+                return conv
+
+        conv = Conversation(sender=sender, receiver=receiver)
+        self.conversations.append(conv)
+        return conv
+
+    def handle_conversation(self, client, conversation):
+        partner = conversation.get_partner(client)
+
+        try:
             while True:
-                client_message = client.recv(1024).decode()
-                if client_message.split(":")[1].strip() == "q" or not client_message.strip():
-                    for conversation in Server.Conversations:
-                        if (conversation['sender']['email'] == email and conversation['sender']['socket'] == socket) or \
-                        (conversation['reciver']['email'] == email and conversation['reciver']['socket'] == socket):
-                            conversation['is_open'] = False
-                            break
-
-                    self.send_message(self, client = {"email": email, "socket": socket}, message = "The conversation has been closed by the sender", reciver_email = {"email": reciver_email, "socket": reciver_socket})
-                    Server.Mails.remove({"email": email, "socket": socket})
-                    Server.Conversations.remove(conversation)
-                    socket.close()
+                message = client.socket.recv(1024).decode().strip()
+                if not message:
                     break
-                else:
-                    self.send_message(self, client = {"email": email, "socket": socket}, message = client_message, reciver_email = {"email": reciver_email, "socket": reciver_socket})
-    
-    def send_message(self, client, message, reciver_email):
-        for conversation in Server.Conversations:
-            if conversation['is_open'] == True and conversation['reciver']['email'] == client['email'] and conversation['reciver']['socket'] == client['socket'] or conversation['sender']['email'] == client['email'] and conversation['sender']['socket'] == client['socket']:
-                conversation['messages'].append(message)
-                reciver_email['socket'].send(message.encode())
-                break
-                
+
+                if message.endswith(":q"):
+                    conversation.is_open = False
+                    self.send_to_client(partner, f"[{client.email}] has ended the conversation.")
+                    break
+
+                formatted = f"[{client.email}] {message}"
+                conversation.messages.append(formatted)
+                self.send_to_client(partner, formatted)
+
+        except Exception as e:
+            print(f"[!] Error in conversation: {e}")
+
+        finally:
+            print(f"[-] Conversation closed for {client.email}")
+            client.socket.close()
+            self.clients = [c for c in self.clients if c.email != client.email]
+            self.conversations = [c for c in self.conversations if c.is_open]
+
+    def send_to_client(self, client, message):
+        try:
+            client.socket.send(message.encode())
+        except:
+            print(f"[!] Failed to send message to {client.email}")
 
 if __name__ == "__main__":
-    server = Server("127.0.0.1", 12345)
-    server.listen()
+    server = Server("127.0.0.1", 12346)
+    server.start()
