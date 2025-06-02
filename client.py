@@ -1,44 +1,76 @@
 import socket
-from threading import Thread
-# Provides us with methods for interacting with the operating system.
-import os
+import threading
+import sys
 
-class Client:
-  
-  # When creating a client, connect to the server, ask for
-  # a username, and begin server communication.
-  def __init__(self, HOST, PORT):
-    self.socket = socket.socket()
-    self.socket.connect((HOST, PORT))
-    self.name = input("Enter your name: ")
-    
-    self.talk_to_server()
+class ChatClient:
+    def __init__(self, host, port):
+        self.server_host = host
+        self.server_port = port
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-  # First send over the name of the client. Then start listening
-  # for messages on a separate thread. Message sending will be on
-  # the main thread.
-  def talk_to_server(self):
-    self.socket.send(self.name.encode())
-    Thread(target = self.receive_message).start()
-    self.send_message()
-    
-  # Get user input and send the message to the server
-  # with the client's name prepended.
-  def send_message(self):
-    while True:
-      client_input = input("")
-      client_message = self.name + ": " + client_input
-      self.socket.send(client_message.encode())
-      
-  # Constantly listen out for messages. If the message is response
-  # from the server is empty, close the program.
-  def receive_message(self):
-    while True:
-      server_message = self.socket.recv(1024).decode()
-      if not server_message.strip():
-        os._exit(0)
-      # Add some color to the console.
-      print("\033[1;31;40m" + server_message + "\033[0m")
-      
-if __name__ == '__main__':
-  Client('127.0.0.1', 7632)
+        try:
+            self.socket.connect((self.server_host, self.server_port))
+        except Exception as e:
+            print(f"[!] Connection failed: {e}")
+            sys.exit(1)
+
+        self.email = input("[+] Enter your email: ").strip()
+        self.send_to_server(self.email)
+
+        response = self.receive_from_server()
+        # print(response)
+
+        self.partner_email = input("[+] Enter the email of the person you want to talk to: ").strip()
+        self.send_to_server(self.partner_email)
+
+        self.start_chat()
+
+    def send_to_server(self, message):
+        try:
+            self.socket.send(message.encode())
+        except Exception as e:
+            print(f"[!] Failed to send message: {e}")
+            sys.exit(1)
+
+    def receive_from_server(self):
+        try:
+            return self.socket.recv(1024).decode()
+        except Exception as e:
+            print(f"[!] Failed to receive data: {e}")
+            sys.exit(1)
+
+    def start_chat(self):
+        print("[+] Chat started. Type your messages below. Type ':q' to quit.")
+        threading.Thread(target=self.receive_messages, daemon=True).start()
+
+        while True:
+            try:
+                message = input("")
+                if message.strip() == ":q":
+                    self.send_to_server(message)
+                    print("[!] Exiting chat...")
+                    self.socket.close()
+                    sys.exit(0)
+
+                self.send_to_server(message)
+
+            except (KeyboardInterrupt, EOFError):
+                print("\n[!] Disconnected by user.")
+                self.socket.close()
+                sys.exit(0)
+
+    def receive_messages(self):
+        while True:
+            try:
+                message = self.receive_from_server()
+                if not message:
+                    print("[!] Server closed the connection.")
+                    self.socket.close()
+                    sys.exit(0)
+                print(f"\033[1;36m{message}\033[0m")  # cyan colored message
+            except:
+                print("[!] Connection lost.")
+                sys.exit(1)
+
+if __name__ == "__main__":
+    ChatClient("127.0.0.1", 12346)
